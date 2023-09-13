@@ -12,6 +12,10 @@ import gym
 import os
 import copy
 
+import warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="gym")
+warnings.filterwarnings("ignore", category=RuntimeWarning, module="numpy")
+
 
 
 #===================#
@@ -85,13 +89,14 @@ class LexCDQN:
         self.t = 0  # total number of frames observed
         self.gamma: float = train_params.gamma  # discount
 
+        #Epsilon parameters
         self.epsilon: float = train_params.epsilon
         self.epsilon_decay: float = train_params.epsilon_decay
         self.epsilon_min: float = train_params.epsilon_min
         self.epsilon_decay_start: int = train_params.epsilon_decay_start
 
-        #NEW
-        self.slack = train_params.slack
+        #Lexicographic parameters
+        self.slack: float = train_params.slack
         self.loss_threshold: float = train_params.loss_threshold
 
         self.update_every: int = train_params.update_every
@@ -105,6 +110,7 @@ class LexCDQN:
         self.nohid: bool = train_params.nohid
         self.bias: bool = train_params.bias
 
+        #Environment parameters
         self.env = env
         self.action_low = self.env.action_space.low
         self.action_high = self.env.action_space.high
@@ -318,7 +324,7 @@ class LexCDQN:
             target_q_batch = np.append(target_q_batch, target_q_values)
 
         #Calculate loss using the target_q_values and the q_values with MSE
-        loss = self.criterion(torch.tensor(q_batch).requires_grad_(True), torch.tensor(target_q_batch).requires_grad_(True)).to(self.device)
+        loss = self.criterion(torch.from_numpy(q_batch).requires_grad_(True), torch.from_numpy(target_q_batch).requires_grad_(True)).to(self.device)
         return loss
 
     #============================
@@ -459,8 +465,9 @@ class LexCDQN:
 
             # Create the array to calculate the average reward per episode anc average episode loss
             # Net rew 1 - Net rew 2 - Net rew 3 - CTRL - ORG - HLT - FWD
-            avg_array = np.vstack((avg_array, [np.append(totrew, rew_array[1:])]))      
+            avg_array = np.vstack((avg_array, [np.append(totrew, rew_array[1:])]))     
             average_episode_loss = [np.mean(avg_losses[:,i][~np.isnan(avg_losses[:,i])]) for i in range(len(avg_losses[0,:]))]
+
             
             #Calculate the average reward over 100 epochs
             if episode>=100: 
@@ -534,7 +541,7 @@ class LexCDQN:
         #Run test procedure
         if test:
 
-            LexCDQN.test(env, agent, writer, run_dir, rew_mode, train_params, show_prog_bar, render)
+            LexCDQN.test(agent, writer, run_dir, rew_mode, train_params, show_prog_bar, render)
 
         writer.flush()
 
@@ -554,7 +561,13 @@ class LexCDQN:
     #       - show_prog_bar     ->Wether or not to show progress bars in the console
     #       - render            ->Wether or not render the tests
     #==========================================================================================================================
-    def test(self, env, agent, writer, run_dir, rew_mode, train_params: TrainingParameters, show_prog_bar=True, render = False):
+    def test(self, agent, writer, run_dir, rew_mode, train_params: TrainingParameters, show_prog_bar=True, render = False, infinite = False):
+
+        self.device = torch.device("cpu")
+
+        if type(writer) == str:
+
+            writer = SummaryWriter(log_dir=writer)
 
         #Initialize env
         if render:
@@ -576,7 +589,7 @@ class LexCDQN:
 
         #Test loop
         for episode in test_iter:       
-
+   
             #Initialize state and save spawn location
             state = test_env.reset()[0]
             spawn = test_env.step([0.0 for i in range(0, test_env.action_space.shape[0])])[4]
@@ -611,7 +624,7 @@ class LexCDQN:
                 action = agent.act(state, test = True)
                 next_state, reward, done, _, info = test_env.step(action)
                 next_state = torch.tensor(next_state).float().to(self.device)
-                reward, rew_array = compute_rewards(rew_array, info, rew_mode)
+                reward, rew_array = LexCDQN.compute_rewards(rew_array, info, rew_mode)
                 
                 #Update cumulative rewards, state and path
                 totrew += reward                            
@@ -622,30 +635,32 @@ class LexCDQN:
                 #Termination condition if the agent gets stuck in an infinite loop
                 #>In one of the training, the Ant started "vibrating" (performing alternately the same two slightly
                 #  different actions) in place and moving slowly but infinitely
-                if abs(reward[0]) > 6000:
+                if not infinite:
 
-                    done = True
+                    if abs(reward[0]) > 6000:
 
-                #Check if the Ant is healthy
-                if state[0]<=0.26 or state[0]>1.0:
-                    
-                    done = True
-
-                #Over a certain time, check if the agent is moving at all
-                if t > 1000:
-
-                    if (last_action == action).all():
                         done = True
-                        writer.add_scalar(f"{train_params.env_name}-[Point]Test/Inactive Terminations", 1, episode)
 
-                    else:
+                    #Check if the Ant is healthy
+                    if state[0]<=0.26 or state[0]>1.0:
+                        
+                        done = True
 
-                        last_action = action
+                    #Over a certain time, check if the agent is moving at all
+                    if t > 1000:
 
-                #Termination condition for time taken
-                if t > 100000:
+                        if (last_action == action).all():
+                            done = True
+                            writer.add_scalar(f"{train_params.env_name}-[Point]Test/Inactive Terminations", 1, episode)
 
-                    done = True        
+                        else:
+
+                            last_action = action
+
+                    #Termination condition for time taken
+                    if t > 100000:
+
+                        done = True        
             
 
             avg_array = np.vstack((avg_array, [np.append(totrew, rew_array[1:])]))
@@ -727,6 +742,10 @@ class LexCDQN:
 
             network_reward = [information["reward_ctrl"], information["distance_from_origin"], information["reward_survive"]]       # [CTR, ORG, HLT]
 
+        if mode == 4:
+
+            network_reward = [information["reward_survive"], information["distance_from_origin"], information["reward_ctrl"]]       # [CTR, ORG, HLT]
+
         return network_reward, rew_array
 
 
@@ -756,6 +775,7 @@ class ContinuousDQN:
         self.t = 0  # total number of frames observed
         self.gamma: float = train_params.gamma  # discount
 
+        #Epsilon parameters
         self.epsilon: float = train_params.epsilon
         self.epsilon_decay: float = train_params.epsilon_decay
         self.epsilon_min: float = train_params.epsilon_min
@@ -770,6 +790,7 @@ class ContinuousDQN:
         self.nohid: bool = train_params.nohid
         self.bias: bool = train_params.bias
 
+        #Environment parameters
         self.env = env
         self.action_low = self.env.action_space.low
         self.action_high = self.env.action_space.high
@@ -878,7 +899,7 @@ class ContinuousDQN:
                 target_q_values[j, indexes] = rewards[i] + ( (1-done[i]) * self.gamma * next_q_values.max()) 
 
             #Calculate loss using the target_q_values and the q_values with MSE
-            loss = self.criterion(torch.tensor(q_values).requires_grad_(True), torch.tensor(target_q_values).requires_grad_(True)).to(self.device)
+            loss = self.criterion(q_values.requires_grad_(True), target_q_values.requires_grad_(True)).to(self.device)
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
@@ -1082,7 +1103,7 @@ class ContinuousDQN:
         #Run test procedure
         if test:
 
-            LexCDQN.test(env, agent, writer, run_dir, rew_mode, train_params, show_prog_bar, render)
+            ContinuousDQN.test(agent, writer, run_dir, rew_mode, train_params, show_prog_bar, render)
 
         writer.flush()
 
@@ -1104,7 +1125,13 @@ class ContinuousDQN:
     #       - show_prog_bar     ->Wether or not to show progress bars in the console
     #       - render            ->Wether or not render the tests
     #==========================================================================================================================
-    def test(self, env, agent, writer, run_dir, rew_mode, train_params: TrainingParameters, show_prog_bar=True, render = False):
+    def test(self, agent, writer, run_dir, rew_mode, train_params: TrainingParameters, show_prog_bar=True, render = False, infinite = False):
+
+        self.device = torch.device("cpu")
+
+        if type(writer) == str:
+            
+            writer = SummaryWriter(log_dir=writer)
 
         #Initialize env
         if render:
@@ -1161,7 +1188,7 @@ class ContinuousDQN:
                 action = agent.act(state, test = True)
                 next_state, reward, done, _, info = test_env.step(action)
                 next_state = torch.tensor(next_state).float().to(self.device)
-                rew_array = compute_rewards(rew_array, info, rew_mode)
+                rew_array = ContinuousDQN.compute_rewards(rew_array, info, rew_mode)
                 reward = rew_array[0]
                 
                 #Update cumulative rewards, state and path
@@ -1173,31 +1200,33 @@ class ContinuousDQN:
                 #Termination condition if the agent gets stuck in an infinite loop
                 #>In one of the training, the Ant started "vibrating" (performing alternately the same two slightly
                 #  different actions) in place and moving slowly but infinitely
-                if abs(reward[0]) > 6000:
-
-                    done = True
-
-                #Check if the Ant is healthy
-                if state[0]<=0.26 or state[0]>1.0:
+                if not infinite:
                     
-                    done = True
+                    if abs(reward) > 6000:
 
-                #Over a certain time, check if the agent is moving at all
-                if t > 1000:
-
-                    if (last_action == action).all():
                         done = True
-                        writer.add_scalar(f"{train_params.env_name}-[Point]Test/Inactive Terminations", 1, episode)
 
-                    else:
+                    #Check if the Ant is healthy
+                    if state[0]<=0.26 or state[0]>1.0:
+                        
+                        done = True
 
-                        last_action = action
+                    #Over a certain time, check if the agent is moving at all
+                    if t > 1000:
 
-                #Termination condition for time taken
-                if t > 100000:
+                        if (last_action == action).all():
+                            done = True
+                            writer.add_scalar(f"{train_params.env_name}-[Point]Test/Inactive Terminations", 1, episode)
 
-                    done = True        
-            
+                        else:
+
+                            last_action = action
+
+                    #Termination condition for time taken
+                    if t > 100000:
+
+                        done = True        
+                
 
             avg_array = np.vstack((avg_array, [np.append(totrew, rew_array[1:])]))
 
@@ -1228,21 +1257,20 @@ class ContinuousDQN:
             
         
             #Write metrics with TensorBoard writer
-            writer.add_scalar(f"{train_params.env_name}-Test/Network Reward - 1:", totrew[0], episode)
-            writer.add_scalar(f"{train_params.env_name}-Test/Network Reward - 2:", totrew[1], episode)
-            writer.add_scalar(f"{train_params.env_name}-Test/Network Reward - 3:", totrew[2], episode)
+            writer.add_scalar(f"{train_params.env_name}-Test/Network Reward:", totrew, episode)
+            writer.add_scalar(f"{train_params.env_name}-Test/Reward + Costs:", (totrew+rew_array[1]), episode)
             writer.add_scalar(f"{train_params.env_name}-Test/Reward Forward:", rew_array[4], episode)
             writer.add_scalar(f"{train_params.env_name}-Test/Cost:", rew_array[1], episode)
             writer.add_scalar(f"{train_params.env_name}-Test/Distance from origin:", rew_array[2], episode)
             writer.add_scalar(f"{train_params.env_name}-Test/Survive:", rew_array[3], episode)
 
-            writer.add_scalar(f"{train_params.env_name}-Test-Avg/ Network Reward - 1:", avg[0], episode)
-            writer.add_scalar(f"{train_params.env_name}-Test-Avg/ Network Reward - 2:", avg[1], episode)
-            writer.add_scalar(f"{train_params.env_name}-Test-Avg/ Network Reward - 3:", avg[2], episode)
-            writer.add_scalar(f"{train_params.env_name}-Test-Avg/ Reward Forward:", avg[6], episode)
-            writer.add_scalar(f"{train_params.env_name}-Test-Avg/ Cost:", avg[3], episode)
-            writer.add_scalar(f"{train_params.env_name}-Test-Avg/ Distance from origin:", avg[4], episode)
-            writer.add_scalar(f"{train_params.env_name}-Test-Avg/ Survive:", avg[5], episode)
+
+            writer.add_scalar(f"{train_params.env_name}-Test-Avg/ Network Reward:", avg[0], episode)
+            writer.add_scalar(f"{train_params.env_name}-Test-Avg/ Reward + Costs:", (avg[0]+avg[1]), episode)
+            writer.add_scalar(f"{train_params.env_name}-Test-Avg/ Reward Forward:", avg[4], episode)
+            writer.add_scalar(f"{train_params.env_name}-Test-Avg/ Cost:", avg[1], episode)
+            writer.add_scalar(f"{train_params.env_name}-Test-Avg/ Distance from origin:", avg[2], episode)
+            writer.add_scalar(f"{train_params.env_name}-Test-Avg/ Survive:", avg[3], episode)
 
         test_env.close()
 
@@ -1261,7 +1289,6 @@ class ContinuousDQN:
         rew_array[2] += information["distance_from_origin"]
         rew_array[1] += information["reward_ctrl"]
 
-
         #default
         if mode == 0:
 
@@ -1273,11 +1300,19 @@ class ContinuousDQN:
 
         if mode == 2:
 
-            rew_array[0] = information["distance_from_origin"] + information["reward_survive"]
+            rew_array[0] = information["distance_from_origin"] + information["reward_ctrl"]
 
         if mode == 3:
 
             rew_array[0] = information["distance_from_origin"] +  information["reward_survive"] + information["reward_ctrl"]
+
+        if mode == 4:
+
+            rew_array[0] = information["distance_from_origin"] +  10 * information["reward_survive"]
+
+        if mode == 5:
+
+            rew_array[0] = information["distance_from_origin"]
 
 
         return rew_array

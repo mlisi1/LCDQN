@@ -1,4 +1,7 @@
 # Specify filepatterns you want git to ignore.
 **/__pycache__
 **/test
-
+**/test_compare
+**/test.py
+**/trainings/tr.unsure
+**/trainings/tr.not
