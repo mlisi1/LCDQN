@@ -4,7 +4,7 @@ Benchmark on MuJoCo environment, realized for the Symbolic and Evolutionary Arti
 The goal of this project is to create a benchmark to see the advantages of Lexicographic Multi-Objective Reinforcement Learning (LMORL) over classic Reinforcement Learning (RL).
 The main difference in these two approaches is that, while RL is inherently a single objective optimization problem, LMORL has the possibility to optimize multiple objectives hierarchically ordered based on their importance.\
 The project was realized in Python, mainly using `PyTorch`, `numpy` and `Gym`, particularly the MuJoCo Ant Environment.
-![Ant Environment]([https://gymnasium.farama.org/environments/mujoco/ant](https://gymnasium.farama.org/_static/videos/mujoco/ant.gif))
+![Ant Environment](https://www.gymlibrary.dev/_images/ant.gif)
 
 # Usage
 ## Training
